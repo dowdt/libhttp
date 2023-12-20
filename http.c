@@ -72,82 +72,12 @@ struct http_url *http_parse_url(const char *url) {
 }
 
 /**
- * Resolve URL and try to connect
- *
- * @param hu - URL structure
- */
-int http_connect(struct http_url *hu) {
-	struct addrinfo hints, *si, *p;
-	int sd = -1;
-
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-
-	/* cut off optional colon */
-	{
-		char buf[256];
-		char *host = hu->host;
-		char *p;
-
-		if ((p = strchr(host, ':'))) {
-			size_t l = p - host;
-
-			if (l > sizeof(buf) - 1) {
-				return -1;
-			}
-
-			*buf = 0;
-			host = strncat(buf, host, l);
-		}
-
-		if (getaddrinfo(host, hu->protocol, &hints, &si)) {
-			return -1;
-		}
-	}
-
-	/* loop through all results until connect is successful */
-	for (p = si; p; p = p->ai_next) {
-		if ((sd = socket(
-				p->ai_family,
-				p->ai_socktype,
-				p->ai_protocol)) < 0) {
-			continue;
-		}
-
-		if (connect(sd, p->ai_addr, p->ai_addrlen) < 0) {
-#ifdef WIN32
-			closesocket(sd);
-#else
-			close(sd);
-#endif
-			continue;
-		}
-
-		break;
-	}
-
-	if (!p && sd > -1) {
-#ifdef WIN32
-		closesocket(sd);
-#else
-		close(sd);
-#endif
-		sd = -1;
-	}
-
-	freeaddrinfo(si);
-
-	return sd;
-}
-
-/**
  * Send HTTP request
  *
  * @param sd - socket
  * @param rq - request
  */
-int http_send(int sd, const char *rq) {
+int http_send(Socket* socket, const char *rq) {
 	size_t l;
 
 	if (!rq) {
@@ -155,7 +85,7 @@ int http_send(int sd, const char *rq) {
 	}
 
 	for (l = strlen(rq); l > 0;) {
-		int bytes = send(sd, rq, l, 0);
+		int bytes = net_send(socket, rq, l, 0);
 
 		if (bytes < 0) {
 			return -1;
@@ -369,7 +299,7 @@ static char *http_parse_message(
  * @param msg - message struct that gets filled with data, must be
  *              all 0 for the very first call
  */
-int http_read(int sd, struct http_message *msg) {
+int http_read(Socket* socket, struct http_message *msg) {
 	if (!msg) {
 		return -1;
 	}
@@ -449,8 +379,8 @@ int http_read(int sd, struct http_message *msg) {
 				size = msg->state.size - msg->state.left;
 			}
 
-			if ((bytes = recv(
-					sd,
+			if ((bytes = net_recv(
+					socket,
 					append,
 					size,
 					0)) < 1) {
@@ -471,39 +401,35 @@ int http_read(int sd, struct http_message *msg) {
  *
  * @param url - URL
  */
-int http_request(const char *url) {
+Socket* http_request(const char *url) {
 	struct http_url *hu;
-	int sd;
+	Socket* socket;
 
 	if (!(hu = http_parse_url(url)) ||
-			(sd = http_connect(hu)) < 0) {
+			(socket = net_connect(hu)) < 0) {
 		/* it's save to free NULL */
 		free(hu);
-		return -1;
+		return NULL;
 	}
 
 	/* this way even very very long query strings won't be a problem */
-	if (http_send(sd, "GET /") ||
-			http_send(sd, hu->query) ||
-			http_send(sd, " HTTP/1.1\r\n\
+	if (http_send(socket, "GET /") ||
+			http_send(socket, hu->query) ||
+			http_send(socket, " HTTP/1.1\r\n\
 User-Agent: "HTTP_USER_AGENT"\r\n\
 Host: ") ||
-			http_send(sd, hu->host) ||
-			http_send(sd, "\r\n\
+			http_send(socket, hu->host) ||
+			http_send(socket, "\r\n\
 Accept: */*\r\n\
 Connection: close\r\n\
 \r\n")) {
-#ifdef WIN32
-		closesocket(sd);
-#else
-		close(sd);
-#endif
-		return -1;
+		net_close(socket);
+		return NULL;
 	}
 
 	free(hu);
 
-	return sd;
+	return socket;
 }
 
 /**
@@ -514,20 +440,9 @@ Connection: close\r\n\
  * @param msg - message struct that gets filled with data, must be
  *              all 0 for the very first call
  */
-int http_response(int sd, struct http_message *msg) {
+int http_response(Socket* socket, struct http_message *msg) {
 	fd_set r;
 	struct timeval tv;
 
-	tv.tv_sec = HTTP_TIME_OUT;
-	tv.tv_usec = 0;
-
-	FD_ZERO(&r);
-	FD_SET(sd, &r);
-
-	if (select(sd + 1, &r, NULL, NULL, &tv) < 1 ||
-			!FD_ISSET(sd, &r)) {
-		return -1;
-	}
-
-	return http_read(sd, msg);
+	return http_read(socket, msg);
 }

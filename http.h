@@ -1,6 +1,8 @@
 #ifndef _http_h_
 #define _http_h_
 
+#include "../net.c"
+
 struct http_message {
 	struct {
 		int code;
@@ -29,12 +31,11 @@ struct http_url {
 };
 
 struct http_url *http_parse_url(const char *);
-int http_connect(struct http_url *);
-int http_send(int, const char *);
-int http_read(int, struct http_message *);
+int http_send(Socket* sock, const char *);
+int http_read(Socket* sock, struct http_message *);
 
 /* high level methods */
-int http_request(const char *);
-int http_response(int, struct http_message *);
+Socket* http_request(const char *);
+int http_response(Socket*, struct http_message *);
 
 #endif
